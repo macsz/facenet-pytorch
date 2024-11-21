@@ -2,6 +2,7 @@ import os
 import requests
 from requests.adapters import HTTPAdapter
 
+from nnt import log
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -211,6 +212,9 @@ class InceptionResnetV1(nn.Module):
             tmp_classes = 8631
         elif pretrained == 'casia-webface':
             tmp_classes = 10575
+        elif pretrained:
+            assert num_classes is not None, "num_classes must be specified when `pretrained` is set and different from 'vggface2' or 'casia-webface'"
+            tmp_classes = num_classes
         elif pretrained is None and self.classify and self.num_classes is None:
             raise Exception('If "pretrained" is not specified and "classify" is True, "num_classes" must be specified')
 
@@ -259,6 +263,7 @@ class InceptionResnetV1(nn.Module):
 
         if pretrained is not None:
             self.logits = nn.Linear(512, tmp_classes)
+            log.info(f"Loading pretrained weights for \"{pretrained}\". Logits shape: {self.logits.weight.shape}")
             load_weights(self, pretrained)
 
         if self.classify and self.num_classes is not None:
@@ -316,6 +321,11 @@ def load_weights(mdl, name):
         path = 'https://github.com/timesler/facenet-pytorch/releases/download/v2.2.9/20180402-114759-vggface2.pt'
     elif name == 'casia-webface':
         path = 'https://github.com/timesler/facenet-pytorch/releases/download/v2.2.9/20180408-102900-casia-webface.pt'
+    elif name.endswith('.pt'):
+        path = name
+        state_dict = torch.load(path)
+        mdl.load_state_dict(state_dict)
+        return
     else:
         raise ValueError('Pretrained models only exist for "vggface2" and "casia-webface"')
 
