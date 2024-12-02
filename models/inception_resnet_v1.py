@@ -1,4 +1,6 @@
 import os
+import random
+from typing import Dict, Optional, List
 import requests
 from requests.adapters import HTTPAdapter
 
@@ -182,6 +184,23 @@ class Mixed_7a(nn.Module):
         return out
 
 
+class ConfigOption:
+    """ConfigOption class for defining a random choice from a list of options."""
+
+    def __init__(self, default, options: List):
+        assert default in options
+        self.default = default
+        self.options = options
+
+    def __call__(self, *args, **kwds):
+        if "default" in kwds.keys() and kwds["default"]:
+            log.debug(f"Using default: {self.default} from {self.options}")
+            return self.default
+        choice = random.choice(self.options)
+        log.debug(f"Using random choice {choice} from {self.options}")
+        return choice
+
+
 class InceptionResnetV1(nn.Module):
     """Inception Resnet V1 model with optional loading of pretrained weights.
 
@@ -200,13 +219,55 @@ class InceptionResnetV1(nn.Module):
             initialized. (default: {None})
         dropout_prob {float} -- Dropout probability. (default: {0.6})
     """
-    def __init__(self, pretrained=None, classify=False, num_classes=None, dropout_prob=0.6, device=None):
+    def _sample_elastic_config(self, default=True) -> Dict:
+        def walk(node):
+            for key, item in node.items():
+                if isinstance(item, ConfigOption):
+                    node[key] = item(default=default)
+                    if key == "num_blocks":
+                        print(f"{node[key]}")
+                else:
+                    walk(item)
+        scales = [0.1, 0.17, 0.20]
+        num_blocks = list(range(1, 11))
+        config = {
+            "repeat_1": {
+                "scale": ConfigOption(0.17, scales),
+                "num_blocks": ConfigOption(5, num_blocks),
+                "block_type": ConfigOption(Block35, [Block35]),
+            },
+            "repeat_2": {
+                "scale": ConfigOption(0.10, [0.1, 0.17, 0.20]),
+                "num_blocks": ConfigOption(10, num_blocks),
+                "block_type": ConfigOption(Block17, [Block17]),
+            },
+            "repeat_3": {
+                "scale": ConfigOption(0.20, [0.1, 0.17, 0.20]),
+                "num_blocks": ConfigOption(5, num_blocks),
+                "block_type": ConfigOption(Block8, [Block8]),
+            }
+        }
+        random.seed(3)
+        walk(config)
+        return config
+
+    def _crate_sequential_from_config(self, key: str, config: Dict):
+        l = []
+        for _ in range(config[key]["num_blocks"]):
+            l.append(config[key]["block_type"](scale=config[key]["scale"]))
+        return nn.Sequential(*l)
+
+    def __init__(self, pretrained=None, classify=False, num_classes=None, dropout_prob=0.6, device=None, elastic_config: Optional[Dict]=None):
         super().__init__()
 
         # Set simple attributes
         self.pretrained = pretrained
         self.classify = classify
         self.num_classes = num_classes
+
+        self.elastic_config = elastic_config if elastic_config is not None else self._sample_elastic_config()
+
+        log.info(f"Elastic config: {self.elastic_config}")
 
         if pretrained == 'vggface2':
             tmp_classes = 8631
@@ -227,34 +288,11 @@ class InceptionResnetV1(nn.Module):
         self.conv2d_3b = BasicConv2d(64, 80, kernel_size=1, stride=1)
         self.conv2d_4a = BasicConv2d(80, 192, kernel_size=3, stride=1)
         self.conv2d_4b = BasicConv2d(192, 256, kernel_size=3, stride=2)
-        self.repeat_1 = nn.Sequential(
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-        )
+        self.repeat_1 = self._crate_sequential_from_config("repeat_1", self.elastic_config)
         self.mixed_6a = Mixed_6a()
-        self.repeat_2 = nn.Sequential(
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-        )
+        self.repeat_2 = self._crate_sequential_from_config("repeat_2", self.elastic_config)
         self.mixed_7a = Mixed_7a()
-        self.repeat_3 = nn.Sequential(
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-        )
+        self.repeat_3 = self._crate_sequential_from_config("repeat_3", self.elastic_config)
         self.block8 = Block8(noReLU=True)
         self.avgpool_1a = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(dropout_prob)
