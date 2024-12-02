@@ -264,6 +264,7 @@ class InceptionResnetV1(nn.Module):
         self.pretrained = pretrained
         self.classify = classify
         self.num_classes = num_classes
+        tmp_classes = None  # just to calm down pylint
 
         self.elastic_config = elastic_config if elastic_config is not None else self._sample_elastic_config()
 
