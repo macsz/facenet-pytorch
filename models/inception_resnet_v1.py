@@ -237,12 +237,12 @@ class InceptionResnetV1(nn.Module):
                 "block_type": ConfigOption(Block35, [Block35]),
             },
             "repeat_2": {
-                "scale": ConfigOption(0.10, [0.1, 0.17, 0.20]),
+                "scale": ConfigOption(0.10, scales),
                 "num_blocks": ConfigOption(10, num_blocks),
                 "block_type": ConfigOption(Block17, [Block17]),
             },
             "repeat_3": {
-                "scale": ConfigOption(0.20, [0.1, 0.17, 0.20]),
+                "scale": ConfigOption(0.20, scales),
                 "num_blocks": ConfigOption(5, num_blocks),
                 "block_type": ConfigOption(Block8, [Block8]),
             }
