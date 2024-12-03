@@ -15,6 +15,7 @@ from .utils.download import download_url_to_file
 class BasicConv2d(nn.Module):
 
     def __init__(self, in_planes, out_planes, kernel_size, stride, padding=0):
+        # NOTE: padding "same" can be used only when stride==1 https://github.com/pytorch/pytorch/issues/67551
         super().__init__()
         self.conv = nn.Conv2d(
             in_planes,
@@ -34,7 +35,6 @@ class BasicConv2d(nn.Module):
 
     def forward(self, x, kernel_size=None):
         if kernel_size is not None:
-            print(self.conv.kernel_size)
             self.conv.kernel_size = (kernel_size, kernel_size)
             self.conv.padding = "same"
         x = self.conv(x)
