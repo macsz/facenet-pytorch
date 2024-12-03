@@ -25,11 +25,15 @@ class BasicConv2d(nn.Module):
             out_planes,
             eps=0.001, # value found in tensorflow
             momentum=0.1, # default pytorch value
-            affine=True
+            affine=True,
         )
         self.relu = nn.ReLU(inplace=False)
 
-    def forward(self, x):
+    def forward(self, x, kernel_size=None):
+        if kernel_size is not None:
+            print(self.conv.kernel_size)
+            self.conv.kernel_size = (kernel_size, kernel_size)
+            self.conv.padding = "same"
         x = self.conv(x)
         x = self.bn(x)
         x = self.relu(x)
@@ -38,22 +42,22 @@ class BasicConv2d(nn.Module):
 
 class Block35(nn.Module):
 
-    def __init__(self, scale=1.0):
+    def __init__(self, scale=1.0, kernel_size=3):
         super().__init__()
 
         self.scale = scale
-
-        self.branch0 = BasicConv2d(256, 32, kernel_size=1, stride=1)
+        kernel_size = 3  # TODO(macsz): remove this line
+        self.kernel_size = kernel_size
+        self.branch0 = BasicConv2d(256, 32, kernel_size=1, padding="same", stride=1)
 
         self.branch1 = nn.Sequential(
-            BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1)
+            BasicConv2d(256, 32, kernel_size=1, padding="same", stride=1),
+            BasicConv2d(32, 32, kernel_size=kernel_size, padding="same", stride=1)
         )
-
         self.branch2 = nn.Sequential(
             BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1)
+            BasicConv2d(32, 32, kernel_size=kernel_size, padding="same", stride=1),
+            BasicConv2d(32, 32, kernel_size=kernel_size, padding="same", stride=1)
         )
 
         self.conv2d = nn.Conv2d(96, 256, kernel_size=1, stride=1)
@@ -61,28 +65,38 @@ class Block35(nn.Module):
 
     def forward(self, x):
         x0 = self.branch0(x)
-        x1 = self.branch1(x)
-        x2 = self.branch2(x)
-        out = torch.cat((x0, x1, x2), 1)
+
+        x1 = self.branch1[0](x)
+        x1 = self.branch1[1](x1, kernel_size=self.kernel_size)  # Adjust kernel size dynamically
+
+        x2 = self.branch2[0](x)
+        x2 = self.branch2[1](x2, kernel_size=self.kernel_size)  # Adjust kernel size dynamically
+        x2 = self.branch2[2](x2, kernel_size=self.kernel_size)  # Adjust kernel size dynamically
+        try:
+            out = torch.cat((x0, x1, x2), 1)
+        except:
+            print(f"X0: {x0.shape}")
+            print(f"X1: {x1.shape}")
+            print(f"X2: {x2.shape}")
+            raise
         out = self.conv2d(out)
-        out = out * self.scale + x
-        out = self.relu(out)
-        return out
+        return out * self.scale + x
 
 
 class Block17(nn.Module):
 
-    def __init__(self, scale=1.0):
+    def __init__(self, scale=1.0, kernel_size=7):
         super().__init__()
 
         self.scale = scale
+        self.kernel_size = kernel_size
 
         self.branch0 = BasicConv2d(896, 128, kernel_size=1, stride=1)
 
         self.branch1 = nn.Sequential(
             BasicConv2d(896, 128, kernel_size=1, stride=1),
-            BasicConv2d(128, 128, kernel_size=(1,7), stride=1, padding=(0,3)),
-            BasicConv2d(128, 128, kernel_size=(7,1), stride=1, padding=(3,0))
+            BasicConv2d(128, 128, kernel_size=(1, self.kernel_size), stride=1, padding=(0,3)),
+            BasicConv2d(128, 128, kernel_size=(self.kernel_size,1), stride=1, padding=(3,0))
         )
 
         self.conv2d = nn.Conv2d(256, 896, kernel_size=1, stride=1)
@@ -235,26 +249,37 @@ class InceptionResnetV1(nn.Module):
                 "scale": ConfigOption(0.17, scales),
                 "num_blocks": ConfigOption(5, num_blocks),
                 "block_type": ConfigOption(Block35, [Block35]),
+                "kernel_size": ConfigOption(1, [1, 3]),  # Default is 3
             },
             "repeat_2": {
                 "scale": ConfigOption(0.10, scales),
                 "num_blocks": ConfigOption(10, num_blocks),
                 "block_type": ConfigOption(Block17, [Block17]),
+                # "kernel_size": ConfigOption(5, [1, 3, 5, 7]),  #default is 7
             },
             "repeat_3": {
                 "scale": ConfigOption(0.20, scales),
                 "num_blocks": ConfigOption(5, num_blocks),
                 "block_type": ConfigOption(Block8, [Block8]),
-            }
+                # "kernel_size": ConfigOption(7, kernel_sizes),
+            },
         }
-        random.seed(3)
         walk(config)
         return config
 
     def _crate_sequential_from_config(self, key: str, config: Dict):
         l = []
         for _ in range(config[key]["num_blocks"]):
-            l.append(config[key]["block_type"](scale=config[key]["scale"]))
+            kwargs = {}
+            if "kernel_size" in config[key]:
+                kwargs["kernel_size"] = config[key]["kernel_size"]
+            else:
+                log.warning(f"No kernel size for {key}")
+            if "scale" in config[key]:
+                kwargs["scale"] = config[key]["scale"]
+            else:
+                log.warning(f"No scale for {key}")
+            l.append(config[key]["block_type"](**kwargs))
         return nn.Sequential(*l)
 
     def __init__(self, pretrained=None, classify=False, num_classes=None, dropout_prob=0.6, device=None, elastic_config: Optional[Dict]=None):
