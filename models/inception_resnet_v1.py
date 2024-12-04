@@ -1,4 +1,5 @@
 import os
+from typing import Dict, List, Optional
 
 import requests
 import torch
@@ -12,13 +13,21 @@ from .utils.download import download_url_to_file
 
 class BasicConv2d(nn.Module):
 
-    def __init__(self, in_planes, out_planes, kernel_size, stride, padding=0):
+    def __init__(
+        self,
+        in_planes,
+        out_planes,
+        kernel_size,
+        stride,
+        padding=0,
+        Conv2d_class=nn.Conv2d,
+    ):
         # NOTE: padding "same" can be used only when stride==1 https://github.com/pytorch/pytorch/issues/67551
         super().__init__()
-        self.conv = nn.Conv2d(
+        self.conv = Conv2d_class(
             in_planes,
             out_planes,
-            kernel_size=kernel_size,
+            kernel_size,
             stride=stride,
             padding=padding,
             bias=False,
@@ -38,6 +47,103 @@ class BasicConv2d(nn.Module):
         return x
 
 
+class SuperConv2D(nn.Conv2d):
+
+    def __init__(
+        self,
+        super_in_dim,
+        super_out_dim,
+        super_kernel_size,
+        stride=(1, 1),
+        padding=(1, 1),
+        bias=False,
+    ):
+        super().__init__(
+            super_in_dim,
+            super_out_dim,
+            super_kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=bias,
+        )
+
+        #         # Define SuperConv2D Layer Maximum Bounds
+        self.super_in_dim = super_in_dim  # input channels
+        self.super_out_dim = super_out_dim  # output channels
+        self.super_kernel_size = super_kernel_size  # Kernel
+
+        self.stride = stride
+        self.padding = padding
+
+        self.subnet = {}
+        super().reset_parameters()
+        self.profiling = False
+
+        self.set_subnet_config(
+            self.super_in_dim, self.super_out_dim, self.super_kernel_size
+        )
+
+    def set_subnet_config(
+        self,
+        subnet_in_dim: Optional[int] = None,
+        subnet_out_dim: Optional[int] = None,
+        subnet_kernel_size: Optional[int] = None,
+    ):
+        if subnet_in_dim is not None:
+            self.subnet_in_dim = subnet_in_dim
+
+        if subnet_out_dim is not None:
+            self.subnet_out_dim = subnet_out_dim
+
+        if subnet_kernel_size is not None:
+            self.subnet_kernel_size = subnet_kernel_size
+
+        self._subnet_parameters()
+
+    #     def subnet_parameters(self, resample=False):
+    #         if self.profiling or resample:
+    #             return self._subnet_parameters()
+    #         return self.subnet
+
+    def _subnet_parameters(self):
+        self.subnet["weight"] = self._subselect_weight(
+            self.weight,
+            self.subnet_in_dim,
+            self.subnet_out_dim,
+            self.subnet_kernel_size,
+        ).to("cuda")
+
+        if self.bias is not None:
+            self.subnet["bias"] = self._subselect_bias(self.bias, self.subnet_out_dim)
+            self.subnet["bias"] = self.subnet["bias"].to("cuda")
+
+    def forward(self, x):
+        self._subnet_parameters()
+        # input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1
+        conv_out = F.conv2d(
+            input=x,
+            weight=self.subnet["weight"],
+            # bias=self.bias,
+            stride=self.stride,
+            padding=self.padding,
+        )
+        return conv_out
+
+    @staticmethod
+    def _subselect_weight(weight, subnet_in_dim, subnet_out_dim, subnet_kernel_size):
+        # Weight matrix for Conv2d = [out_channels, in_channels, kernel, kernel]
+        subnet_weight = weight[
+            :subnet_out_dim, :subnet_in_dim, :subnet_kernel_size, :subnet_kernel_size
+        ]
+
+        return subnet_weight
+
+    @staticmethod
+    def _subselect_bias(bias, subnet_out_dim):
+        subnet_bias = bias[:subnet_out_dim]
+        return subnet_bias
+
+
 class Block35(nn.Module):
 
     def __init__(self, scale=1.0):
@@ -49,13 +155,34 @@ class Block35(nn.Module):
 
         self.branch1 = nn.Sequential(
             BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D,
+            ),
         )
 
         self.branch2 = nn.Sequential(
             BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1),
-            BasicConv2d(32, 32, kernel_size=3, stride=1, padding=1),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D,
+            ),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D,
+            ),
         )
 
         self.conv2d = nn.Conv2d(96, 256, kernel_size=1, stride=1)
@@ -140,7 +267,14 @@ class Mixed_6a(nn.Module):
 
         self.branch1 = nn.Sequential(
             BasicConv2d(256, 192, kernel_size=1, stride=1),
-            BasicConv2d(192, 192, kernel_size=3, stride=1, padding=1),
+            BasicConv2d(
+                192,
+                192,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D,
+            ),
             BasicConv2d(192, 256, kernel_size=3, stride=2),
         )
 
@@ -171,7 +305,14 @@ class Mixed_7a(nn.Module):
 
         self.branch2 = nn.Sequential(
             BasicConv2d(896, 256, kernel_size=1, stride=1),
-            BasicConv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            BasicConv2d(
+                256,
+                256,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D,
+            ),
             BasicConv2d(256, 256, kernel_size=3, stride=2),
         )
 
@@ -219,7 +360,7 @@ class InceptionResnetV1(nn.Module):
         self.pretrained = pretrained
         self.classify = classify
         self.num_classes = num_classes
-        tmp_classes = None # just to calm down pylint
+        tmp_classes = None  # just to calm down pylint
 
         if pretrained == "vggface2":
             tmp_classes = 8631
@@ -237,15 +378,21 @@ class InceptionResnetV1(nn.Module):
 
         # Define layers
         self.conv2d_1a = BasicConv2d(3, 32, kernel_size=3, stride=2)
-        self.conv2d_2a = BasicConv2d(32, 32, kernel_size=3, stride=1)
-        self.conv2d_2b = BasicConv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2d_2a = BasicConv2d(
+            32, 32, kernel_size=3, stride=1, padding="same", Conv2d_class=SuperConv2D
+        )
+        self.conv2d_2b = BasicConv2d(
+            32, 64, kernel_size=3, stride=1, padding="same", Conv2d_class=SuperConv2D
+        )
         self.maxpool_3a = nn.MaxPool2d(3, stride=2)
         self.conv2d_3b = BasicConv2d(64, 80, kernel_size=1, stride=1)
         self.conv2d_4a = BasicConv2d(80, 192, kernel_size=3, stride=1)
         self.conv2d_4b = BasicConv2d(192, 256, kernel_size=3, stride=2)
         self.repeat_1 = self._create_sequential(repeat=5, BlockType=Block35, scale=0.17)
         self.mixed_6a = Mixed_6a()
-        self.repeat_2 = self._create_sequential(repeat=10, BlockType=Block17, scale=0.10)
+        self.repeat_2 = self._create_sequential(
+            repeat=10, BlockType=Block17, scale=0.10
+        )
         self.mixed_7a = Mixed_7a()
         self.repeat_3 = self._create_sequential(repeat=5, BlockType=Block8, scale=0.20)
         self.block8 = Block8(noReLU=True)
@@ -269,8 +416,57 @@ class InceptionResnetV1(nn.Module):
             self.device = device
             self.to(device)
 
-    def _create_sequential(self, repeat: int = 5, BlockType: nn.Module = Block35, scale: float = 0.17):
+        # self.set_config({"ks": [1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1]})
+        # self.conv2d_2b.conv.set_subnet_config(subnet_kernel_size=1)
+        # self.conv2d_2a.conv.set_subnet_config(subnet_kernel_size=1)
+        log.info(
+            f"Current subnet config: [{len(self.get_config()['ks'])}] {self.get_config()}"
+        )
+        # exit()
+
+    def _create_sequential(
+        self, repeat: int = 5, BlockType: nn.Module = Block35, scale: float = 0.17
+    ):
         return nn.Sequential(*[BlockType(scale=scale) for _ in range(repeat)])
+
+    def set_config(self, config: Dict[str, List[int]]):
+        super_ops: List[SuperConv2D] = self.get_super_ops()
+        for i, (ks, op) in enumerate(zip(config["ks"], super_ops)):
+            op.set_subnet_config(subnet_kernel_size=ks)
+
+        seq_ops = self.get_super_sequential_ops()
+        print(len(seq_ops))
+        # print(super_ops)
+        # exit()
+
+    def get_config(self) -> Dict[str, List[int]]:
+        super_ops = self.get_super_ops()
+        super_sequential_ops = self.get_super_sequential_ops()
+        config = {
+            "ks": [op.subnet_kernel_size for op in super_ops],
+            "depth": [op.num_layers for op in super_sequential_ops],
+        }
+        return config
+
+    def get_super_ops(self) -> List[SuperConv2D]:
+        super_ops: List[SuperConv2D] = [
+            module for module in self.modules() if isinstance(module, SuperConv2D)
+        ]
+        return super_ops
+
+    def get_super_sequential_ops(self) -> List[SuperSequential]:
+        super_sequential_ops: List[SuperSequential] = [
+            module for module in self.modules() if isinstance(module, SuperSequential)
+        ]
+        return super_sequential_ops
+
+    def list_first_level_sequential_layers(self):
+        """List first level sequential layers"""
+        first_level_sequential_layers = []
+        for name, module in self.named_children():
+            if isinstance(module, nn.Sequential):
+                first_level_sequential_layers.append((name, module))
+        return first_level_sequential_layers
 
     def forward(self, x):
         """Calculate embeddings or logits given a batch of input image tensors.
