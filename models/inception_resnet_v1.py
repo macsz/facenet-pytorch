@@ -219,6 +219,7 @@ class InceptionResnetV1(nn.Module):
         self.pretrained = pretrained
         self.classify = classify
         self.num_classes = num_classes
+        tmp_classes = None # just to calm down pylint
 
         if pretrained == "vggface2":
             tmp_classes = 8631
