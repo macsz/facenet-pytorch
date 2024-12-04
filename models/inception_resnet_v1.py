@@ -355,8 +355,8 @@ def load_weights(mdl, name):
     if not os.path.exists(cached_file):
         download_url_to_file(path, cached_file)
 
-    state_dict = torch.load(cached_file)
-    mdl.load_state_dict(state_dict)
+    state_dict = torch.load(cached_file, weights_only=True)
+    mdl.load_state_dict(state_dict, strict=False)
 
 
 def get_torch_home():
