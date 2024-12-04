@@ -1,14 +1,84 @@
 import os
 from typing import Dict, List, Optional
 
-import requests
 import torch
 from nnt import log
-from requests.adapters import HTTPAdapter
 from torch import nn
 from torch.nn import functional as F
 
 from .utils.download import download_url_to_file
+
+
+class CustomNNModule(nn.Module):
+    """Wrapper for nn.Module with additional method to calculate params.
+
+    Standard nn.Module was not properly calculating the number of parameters
+    for Convolutional layers with modified kernel size. This class is a workaround.
+    """
+
+    def get_parameters(self):
+        return get_parameters(self)
+
+
+def calculate_superconv2d_params(superconv_layer):
+    """
+    Calculate the number of parameters used by the SuperConv2D layer
+    based on its runtime configuration.
+
+    Args:
+        superconv_layer (SuperConv2D): The custom SuperConv2D layer.
+
+    Returns:
+        int: Number of parameters used by the layer.
+        float: Size of the parameters in MB.
+    """
+    # Extract runtime configuration
+    subnet_in_dim = superconv_layer.subnet_in_dim
+    subnet_out_dim = superconv_layer.subnet_out_dim
+    subnet_kernel_size = superconv_layer.subnet_kernel_size
+
+    # Calculate number of parameters in the weight matrix
+    weight_params = subnet_in_dim * subnet_out_dim * (subnet_kernel_size**2)
+    weight_size = weight_params * superconv_layer.weight.element_size()  # In bytes
+
+    # Calculate bias parameters (if bias is not None)
+    bias_params = 0
+    if superconv_layer.bias is not None:
+        bias_params = subnet_out_dim
+        weight_size += (
+            bias_params * superconv_layer.bias.element_size()
+        )  # Add bias size
+
+    total_params = weight_params + bias_params
+    return total_params, weight_size / (1024**2)  # Convert to MB
+
+
+def get_parameters(model: nn.Module) -> int:
+    parameters = []
+    for name, module in model.named_children():
+        if hasattr(module, "get_parameters"):
+            module_params = module.get_parameters()
+            # log.warning(f"GET_PARTAMS {name}: {module_params}")
+
+        elif isinstance(module, BasicConv2d) and isinstance(module.conv, SuperConv2D):
+            module_params = calculate_superconv2d_params(module.conv)[0]
+            module_params += sum(p.numel() for p in module.bn.parameters())
+            module_params += sum(p.numel() for p in module.relu.parameters())
+            # log.warning(f"{name}: {module_params}")
+        elif isinstance(module, SuperConv2D):
+            module_params = calculate_superconv2d_params(module)[0]
+            # log.warning(f"{name}: {module_params}")
+        elif isinstance(module, nn.Sequential):
+            module_params = 0
+            # log.warning(f"Sequential: {name}: {get_parameters(module)}")
+            for inseq_name, inseq_module in module.named_children():
+                module_params += get_parameters(inseq_module)
+                # log.warning(f"Sequential: {inseq_name} {type(inseq_module)}: {module_params}")
+        else:
+            module_params = sum(p.numel() for p in module.parameters())
+            # log.error(f"{name}, {type(module)}: {module_params}")
+        parameters.append(module_params)
+    return sum(parameters)
 
 
 class BasicConv2d(nn.Module):
@@ -97,13 +167,7 @@ class SuperConv2D(nn.Conv2d):
 
         if subnet_kernel_size is not None:
             self.subnet_kernel_size = subnet_kernel_size
-
         self._subnet_parameters()
-
-    #     def subnet_parameters(self, resample=False):
-    #         if self.profiling or resample:
-    #             return self._subnet_parameters()
-    #         return self.subnet
 
     def _subnet_parameters(self):
         self.subnet["weight"] = self._subselect_weight(
@@ -144,7 +208,7 @@ class SuperConv2D(nn.Conv2d):
         return subnet_bias
 
 
-class Block35(nn.Module):
+class Block35(CustomNNModule):
 
     def __init__(self, scale=1.0):
         super().__init__()
@@ -199,7 +263,7 @@ class Block35(nn.Module):
         return out
 
 
-class Block17(nn.Module):
+class Block17(CustomNNModule):
 
     def __init__(self, scale=1.0):
         super().__init__()
@@ -227,7 +291,7 @@ class Block17(nn.Module):
         return out
 
 
-class Block8(nn.Module):
+class Block8(CustomNNModule):
 
     def __init__(self, scale=1.0, noReLU=False):
         super().__init__()
@@ -258,7 +322,7 @@ class Block8(nn.Module):
         return out
 
 
-class Mixed_6a(nn.Module):
+class Mixed_6a(CustomNNModule):
 
     def __init__(self):
         super().__init__()
@@ -288,7 +352,7 @@ class Mixed_6a(nn.Module):
         return out
 
 
-class Mixed_7a(nn.Module):
+class Mixed_7a(CustomNNModule):
 
     def __init__(self):
         super().__init__()
@@ -395,10 +459,20 @@ class InceptionResnetV1(nn.Module):
         # Define layers
         self.conv2d_1a = BasicConv2d(3, 32, kernel_size=3, stride=2)
         self.conv2d_2a = BasicConv2d(
-            32, 32, kernel_size=3, stride=1, padding="same", Conv2d_class=SuperConv2D
+            32,
+            32,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+            Conv2d_class=SuperConv2D,
         )
         self.conv2d_2b = BasicConv2d(
-            32, 64, kernel_size=3, stride=1, padding="same", Conv2d_class=SuperConv2D
+            32,
+            64,
+            kernel_size=3,
+            stride=1,
+            padding="same",
+            Conv2d_class=SuperConv2D,
         )
         self.maxpool_3a = nn.MaxPool2d(3, stride=2)
         self.conv2d_3b = BasicConv2d(64, 80, kernel_size=1, stride=1)
@@ -471,7 +545,9 @@ class InceptionResnetV1(nn.Module):
 
     def get_super_ops(self) -> List[SuperConv2D]:
         super_ops: List[SuperConv2D] = [
-            module for module in self.modules() if isinstance(module, SuperConv2D)
+            module
+            for name, module in self.named_modules()
+            if isinstance(module, SuperConv2D)
         ]
         return super_ops
 
