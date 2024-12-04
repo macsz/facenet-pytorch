@@ -327,6 +327,22 @@ class Mixed_7a(nn.Module):
         return out
 
 
+class SuperSequential(nn.Sequential):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.num_layers = len(self)
+
+    def forward(self, x, num_layers=None):
+        if num_layers is None:
+            num_layers = self.num_layers
+        for i in range(num_layers):
+            x = self[i](x)
+        return x
+
+    def set_num_layers(self, num_layers):
+        self.num_layers = num_layers
+
+
 class InceptionResnetV1(nn.Module):
     """Inception Resnet V1 model with optional loading of pretrained weights.
 
@@ -417,6 +433,12 @@ class InceptionResnetV1(nn.Module):
             self.to(device)
 
         # self.set_config({"ks": [1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1]})
+        self.set_config(
+            {
+                "ks": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+                "num_layers": [5, 10, 5],
+            }
+        )
         # self.conv2d_2b.conv.set_subnet_config(subnet_kernel_size=1)
         # self.conv2d_2a.conv.set_subnet_config(subnet_kernel_size=1)
         log.info(
@@ -427,24 +449,23 @@ class InceptionResnetV1(nn.Module):
     def _create_sequential(
         self, repeat: int = 5, BlockType: nn.Module = Block35, scale: float = 0.17
     ):
-        return nn.Sequential(*[BlockType(scale=scale) for _ in range(repeat)])
+        return SuperSequential(*[BlockType(scale=scale) for _ in range(repeat)])
 
     def set_config(self, config: Dict[str, List[int]]):
         super_ops: List[SuperConv2D] = self.get_super_ops()
-        for i, (ks, op) in enumerate(zip(config["ks"], super_ops)):
+        for ks, op in zip(config["ks"], super_ops):
             op.set_subnet_config(subnet_kernel_size=ks)
 
         seq_ops = self.get_super_sequential_ops()
-        print(len(seq_ops))
-        # print(super_ops)
-        # exit()
+        for num_layers, op in zip(config["num_layers"], seq_ops):
+            op.set_num_layers(num_layers)
 
     def get_config(self) -> Dict[str, List[int]]:
         super_ops = self.get_super_ops()
         super_sequential_ops = self.get_super_sequential_ops()
         config = {
             "ks": [op.subnet_kernel_size for op in super_ops],
-            "depth": [op.num_layers for op in super_sequential_ops],
+            "num_layers": [op.num_layers for op in super_sequential_ops],
         }
         return config
 
