@@ -242,34 +242,11 @@ class InceptionResnetV1(nn.Module):
         self.conv2d_3b = BasicConv2d(64, 80, kernel_size=1, stride=1)
         self.conv2d_4a = BasicConv2d(80, 192, kernel_size=3, stride=1)
         self.conv2d_4b = BasicConv2d(192, 256, kernel_size=3, stride=2)
-        self.repeat_1 = nn.Sequential(
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-            Block35(scale=0.17),
-        )
+        self.repeat_1 = self._create_sequential(repeat=5, BlockType=Block35, scale=0.17)
         self.mixed_6a = Mixed_6a()
-        self.repeat_2 = nn.Sequential(
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-            Block17(scale=0.10),
-        )
+        self.repeat_2 = self._create_sequential(repeat=10, BlockType=Block17, scale=0.10)
         self.mixed_7a = Mixed_7a()
-        self.repeat_3 = nn.Sequential(
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-            Block8(scale=0.20),
-        )
+        self.repeat_3 = self._create_sequential(repeat=5, BlockType=Block8, scale=0.20)
         self.block8 = Block8(noReLU=True)
         self.avgpool_1a = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(dropout_prob)
@@ -290,6 +267,9 @@ class InceptionResnetV1(nn.Module):
         if device is not None:
             self.device = device
             self.to(device)
+
+    def _create_sequential(self, repeat: int = 5, BlockType: nn.Module = Block35, scale: float = 0.17):
+        return nn.Sequential(*[BlockType(scale=scale) for _ in range(repeat)])
 
     def forward(self, x):
         """Calculate embeddings or logits given a batch of input image tensors.
