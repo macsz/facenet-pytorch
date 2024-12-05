@@ -53,12 +53,162 @@ def calculate_superconv2d_params(superconv_layer):
     return total_params, weight_size / (1024**2)  # Convert to MB
 
 
+class SuperSequential(nn.Sequential):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.num_layers = len(self)
+
+    def forward(self, x, num_layers=None):
+        if num_layers is None:
+            num_layers = self.num_layers
+        for i in range(num_layers):
+            x = self[i](x)
+        return x
+
+    def set_num_layers(self, num_layers):
+        self.num_layers = num_layers
+
+    def get_parameters(self):
+        num_layers = self.num_layers
+        parameters = 0
+        for i in range(num_layers):
+            parameters += get_parameters(self[i])
+        return parameters
+
+
+class Block35(CustomNNModule):
+
+    def __init__(self, scale=1.0, use_superconv=False):
+        super().__init__()
+
+        self.scale = scale
+
+        self.branch0 = BasicConv2d(256, 32, kernel_size=1, stride=1)
+
+        self.branch1 = nn.Sequential(
+            BasicConv2d(256, 32, kernel_size=1, stride=1),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D if use_superconv else nn.Conv2d,
+            ),
+        )
+
+        self.branch2 = nn.Sequential(
+            BasicConv2d(256, 32, kernel_size=1, stride=1),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D if use_superconv else nn.Conv2d,
+            ),
+            BasicConv2d(
+                32,
+                32,
+                kernel_size=3,
+                stride=1,
+                padding="same",
+                Conv2d_class=SuperConv2D if use_superconv else nn.Conv2d,
+            ),
+        )
+
+        self.conv2d = nn.Conv2d(96, 256, kernel_size=1, stride=1)
+        self.relu = nn.ReLU(inplace=False)
+
+    def forward(self, x):
+        x0 = self.branch0(x)
+        x1 = self.branch1(x)
+        x2 = self.branch2(x)
+        out = torch.cat((x0, x1, x2), 1)
+        out = self.conv2d(out)
+        out = out * self.scale + x
+        out = self.relu(out)
+        return out
+
+
+class Block17(CustomNNModule):
+
+    def __init__(self, scale=1.0):
+        super().__init__()
+
+        self.scale = scale
+
+        self.branch0 = BasicConv2d(896, 128, kernel_size=1, stride=1)
+
+        self.branch1 = nn.Sequential(
+            BasicConv2d(896, 128, kernel_size=1, stride=1),
+            BasicConv2d(128, 128, kernel_size=(1, 7), stride=1, padding=(0, 3)),
+            BasicConv2d(128, 128, kernel_size=(7, 1), stride=1, padding=(3, 0)),
+        )
+
+        self.conv2d = nn.Conv2d(256, 896, kernel_size=1, stride=1)
+        self.relu = nn.ReLU(inplace=False)
+
+    def forward(self, x):
+        x0 = self.branch0(x)
+        x1 = self.branch1(x)
+        out = torch.cat((x0, x1), 1)
+        out = self.conv2d(out)
+        out = out * self.scale + x
+        out = self.relu(out)
+        return out
+
+
+class Block8(CustomNNModule):
+
+    def __init__(self, scale=1.0, noReLU=False):
+        super().__init__()
+
+        self.scale = scale
+        self.noReLU = noReLU
+
+        self.branch0 = BasicConv2d(1792, 192, kernel_size=1, stride=1)
+
+        self.branch1 = nn.Sequential(
+            BasicConv2d(1792, 192, kernel_size=1, stride=1),
+            BasicConv2d(192, 192, kernel_size=(1, 3), stride=1, padding=(0, 1)),
+            BasicConv2d(192, 192, kernel_size=(3, 1), stride=1, padding=(1, 0)),
+        )
+
+        self.conv2d = nn.Conv2d(384, 1792, kernel_size=1, stride=1)
+        if not self.noReLU:
+            self.relu = nn.ReLU(inplace=False)
+
+    def forward(self, x):
+        x0 = self.branch0(x)
+        x1 = self.branch1(x)
+        out = torch.cat((x0, x1), 1)
+        out = self.conv2d(out)
+        out = out * self.scale + x
+        if not self.noReLU:
+            out = self.relu(out)
+        return out
+
+
+def create_sequential(
+    repeat: int = 5,
+    BlockType: nn.Module = Block35,
+    SequentialType=SuperSequential,
+    *args,
+    **kwargs,
+):
+    return SequentialType(*[BlockType(*args, **kwargs) for _ in range(repeat)])
+
+
 def get_parameters(model: nn.Module) -> int:
+    if isinstance(model, SuperSequential):
+        return model.get_parameters()
+
     parameters = []
     for name, module in model.named_children():
         if hasattr(module, "get_parameters"):
             module_params = module.get_parameters()
-            # log.warning(f"GET_PARTAMS {name}: {module_params}")
+            # log.warning(f"GET_PARTAMS {name}: {type(module)} {module_params}")
 
         elif isinstance(module, BasicConv2d) and isinstance(module.conv, SuperConv2D):
             module_params = calculate_superconv2d_params(module.conv)[0]
@@ -208,120 +358,6 @@ class SuperConv2D(nn.Conv2d):
         return subnet_bias
 
 
-class Block35(CustomNNModule):
-
-    def __init__(self, scale=1.0):
-        super().__init__()
-
-        self.scale = scale
-
-        self.branch0 = BasicConv2d(256, 32, kernel_size=1, stride=1)
-
-        self.branch1 = nn.Sequential(
-            BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(
-                32,
-                32,
-                kernel_size=3,
-                stride=1,
-                padding="same",
-                Conv2d_class=SuperConv2D,
-            ),
-        )
-
-        self.branch2 = nn.Sequential(
-            BasicConv2d(256, 32, kernel_size=1, stride=1),
-            BasicConv2d(
-                32,
-                32,
-                kernel_size=3,
-                stride=1,
-                padding="same",
-                Conv2d_class=SuperConv2D,
-            ),
-            BasicConv2d(
-                32,
-                32,
-                kernel_size=3,
-                stride=1,
-                padding="same",
-                Conv2d_class=SuperConv2D,
-            ),
-        )
-
-        self.conv2d = nn.Conv2d(96, 256, kernel_size=1, stride=1)
-        self.relu = nn.ReLU(inplace=False)
-
-    def forward(self, x):
-        x0 = self.branch0(x)
-        x1 = self.branch1(x)
-        x2 = self.branch2(x)
-        out = torch.cat((x0, x1, x2), 1)
-        out = self.conv2d(out)
-        out = out * self.scale + x
-        out = self.relu(out)
-        return out
-
-
-class Block17(CustomNNModule):
-
-    def __init__(self, scale=1.0):
-        super().__init__()
-
-        self.scale = scale
-
-        self.branch0 = BasicConv2d(896, 128, kernel_size=1, stride=1)
-
-        self.branch1 = nn.Sequential(
-            BasicConv2d(896, 128, kernel_size=1, stride=1),
-            BasicConv2d(128, 128, kernel_size=(1, 7), stride=1, padding=(0, 3)),
-            BasicConv2d(128, 128, kernel_size=(7, 1), stride=1, padding=(3, 0)),
-        )
-
-        self.conv2d = nn.Conv2d(256, 896, kernel_size=1, stride=1)
-        self.relu = nn.ReLU(inplace=False)
-
-    def forward(self, x):
-        x0 = self.branch0(x)
-        x1 = self.branch1(x)
-        out = torch.cat((x0, x1), 1)
-        out = self.conv2d(out)
-        out = out * self.scale + x
-        out = self.relu(out)
-        return out
-
-
-class Block8(CustomNNModule):
-
-    def __init__(self, scale=1.0, noReLU=False):
-        super().__init__()
-
-        self.scale = scale
-        self.noReLU = noReLU
-
-        self.branch0 = BasicConv2d(1792, 192, kernel_size=1, stride=1)
-
-        self.branch1 = nn.Sequential(
-            BasicConv2d(1792, 192, kernel_size=1, stride=1),
-            BasicConv2d(192, 192, kernel_size=(1, 3), stride=1, padding=(0, 1)),
-            BasicConv2d(192, 192, kernel_size=(3, 1), stride=1, padding=(1, 0)),
-        )
-
-        self.conv2d = nn.Conv2d(384, 1792, kernel_size=1, stride=1)
-        if not self.noReLU:
-            self.relu = nn.ReLU(inplace=False)
-
-    def forward(self, x):
-        x0 = self.branch0(x)
-        x1 = self.branch1(x)
-        out = torch.cat((x0, x1), 1)
-        out = self.conv2d(out)
-        out = out * self.scale + x
-        if not self.noReLU:
-            out = self.relu(out)
-        return out
-
-
 class Mixed_6a(CustomNNModule):
 
     def __init__(self):
@@ -389,22 +425,6 @@ class Mixed_7a(CustomNNModule):
         x3 = self.branch3(x)
         out = torch.cat((x0, x1, x2, x3), 1)
         return out
-
-
-class SuperSequential(nn.Sequential):
-    def __init__(self, *args):
-        super().__init__(*args)
-        self.num_layers = len(self)
-
-    def forward(self, x, num_layers=None):
-        if num_layers is None:
-            num_layers = self.num_layers
-        for i in range(num_layers):
-            x = self[i](x)
-        return x
-
-    def set_num_layers(self, num_layers):
-        self.num_layers = num_layers
 
 
 class InceptionResnetV1(nn.Module):
@@ -478,13 +498,27 @@ class InceptionResnetV1(nn.Module):
         self.conv2d_3b = BasicConv2d(64, 80, kernel_size=1, stride=1)
         self.conv2d_4a = BasicConv2d(80, 192, kernel_size=3, stride=1)
         self.conv2d_4b = BasicConv2d(192, 256, kernel_size=3, stride=2)
-        self.repeat_1 = self._create_sequential(repeat=5, BlockType=Block35, scale=0.17)
+        self.repeat_1 = create_sequential(
+            repeat=5,
+            BlockType=Block35,
+            scale=0.17,
+            SequentialType=SuperSequential,
+            use_superconv=True,
+        )
         self.mixed_6a = Mixed_6a()
-        self.repeat_2 = self._create_sequential(
-            repeat=10, BlockType=Block17, scale=0.10
+        self.repeat_2 = create_sequential(
+            repeat=10,
+            BlockType=Block17,
+            scale=0.10,
+            SequentialType=SuperSequential,
         )
         self.mixed_7a = Mixed_7a()
-        self.repeat_3 = self._create_sequential(repeat=5, BlockType=Block8, scale=0.20)
+        self.repeat_3 = create_sequential(
+            repeat=5,
+            BlockType=Block8,
+            scale=0.20,
+            SequentialType=SuperSequential,
+        )
         self.block8 = Block8(noReLU=True)
         self.avgpool_1a = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(dropout_prob)
@@ -507,6 +541,12 @@ class InceptionResnetV1(nn.Module):
             self.to(device)
 
         # self.set_config({"ks": [1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1]})
+        # self.set_config(
+        #     {
+        #         "ks": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+        #         "num_layers": [5, 5, 5],
+        #     }
+        # )
         self.set_config(
             {
                 "ks": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
@@ -518,12 +558,10 @@ class InceptionResnetV1(nn.Module):
         log.info(
             f"Current subnet config: [{len(self.get_config()['ks'])}] {self.get_config()}"
         )
-        # exit()
 
-    def _create_sequential(
-        self, repeat: int = 5, BlockType: nn.Module = Block35, scale: float = 0.17
-    ):
-        return SuperSequential(*[BlockType(scale=scale) for _ in range(repeat)])
+        # log.info(f"Conv : {count_conv2d_parameters(self)}")
+        # log.info(f"Model: {params(self)}")
+        log.info(f"Model: {get_parameters(self)}")
 
     def set_config(self, config: Dict[str, List[int]]):
         super_ops: List[SuperConv2D] = self.get_super_ops()
