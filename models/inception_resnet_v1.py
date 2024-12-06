@@ -540,6 +540,11 @@ class InceptionResnetV1(nn.Module):
             self.device = device
             self.to(device)
 
+        self.max_config = self.get_config()
+        self.set_config(self.max_config)
+
+        log.info(f"Search space size: {self.get_search_space_size()}")
+
         # self.set_config({"ks": [1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1]})
         # self.set_config(
         #     {
@@ -547,52 +552,98 @@ class InceptionResnetV1(nn.Module):
         #         "num_layers": [5, 5, 5],
         #     }
         # )
-        self.set_config(
-            {
-                "ks": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
-                "num_layers": [5, 10, 5],
-            }
-        )
+        # self.set_config(
+        #     {
+        #         "ks": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+        #         "num_layers": [1, 1, 3],
+        #     }
+        # )
+        # exit()
         # self.conv2d_2b.conv.set_subnet_config(subnet_kernel_size=1)
         # self.conv2d_2a.conv.set_subnet_config(subnet_kernel_size=1)
-        log.info(
-            f"Current subnet config: [{len(self.get_config()['ks'])}] {self.get_config()}"
-        )
 
         # log.info(f"Conv : {count_conv2d_parameters(self)}")
         # log.info(f"Model: {params(self)}")
-        log.info(f"Model: {get_parameters(self)}")
+
+    def set_random_subnet(self):
+        config = self._get_random_config()
+        self.set_config(config)
+
+    def _get_random_config(self) -> Dict:
+        config = {
+            "ks": [
+                random.choice(list(range(1, ks + 1, 2))) for ks in self.max_config["ks"]
+            ],
+            "num_layers": [
+                random.choice(list(range(1, _ + 1)))
+                for _ in self.max_config["num_layers"]
+            ],
+        }
+
+        return config
+
+    def get_search_space_size(self) -> int:
+        config = {
+            "ks": [len(list(range(1, ks + 1, 2))) for ks in self.max_config["ks"]],
+            "num_layers": [
+                len(list(range(1, _ + 1))) for _ in self.max_config["num_layers"]
+            ],
+        }
+        return math.prod([math.prod(v) for v in config.values()])
 
     def set_config(self, config: Dict[str, List[int]]):
         super_ops: List[SuperConv2D] = self.get_super_ops()
-        for ks, op in zip(config["ks"], super_ops):
-            op.set_subnet_config(subnet_kernel_size=ks)
+        for ks, (name, module) in zip(config["ks"], super_ops.items()):
+            if module.subnet_kernel_size == ks:
+                # log.debug(f"[SuperConv] Skipping {name}.subnet_kernel_size: {ks}")
+                continue
+            log.debug(
+                f"[SuperConv] Setting {name}.subnet_kernel_size from {module.subnet_kernel_size} to {ks}"
+            )
+            module.set_subnet_config(subnet_kernel_size=ks)
 
         seq_ops = self.get_super_sequential_ops()
-        for num_layers, op in zip(config["num_layers"], seq_ops):
-            op.set_num_layers(num_layers)
+        for num_layers, (name, module) in zip(config["num_layers"], seq_ops.items()):
+            if module.num_layers == num_layers:
+                # log.debug(f"[SuperSequ] Skipping {name}.num_layers: {num_layers}")
+                continue
+            log.debug(
+                f"[SuperSequ] Setting {name}.num_layers from {module.num_layers} to {num_layers}"
+            )
+            module.set_num_layers(num_layers)
+
+        log.info(
+            f"Acitve subnet (#param: {get_parameters(self)}) config: [{len(config['ks'])}] {config}"
+        )
 
     def get_config(self) -> Dict[str, List[int]]:
+        """Get current configuration of the model"""
         super_ops = self.get_super_ops()
         super_sequential_ops = self.get_super_sequential_ops()
         config = {
-            "ks": [op.subnet_kernel_size for op in super_ops],
-            "num_layers": [op.num_layers for op in super_sequential_ops],
+            "ks": [op.subnet_kernel_size for name, op in super_ops.items()],
+            "num_layers": [
+                module.num_layers for name, module in super_sequential_ops.items()
+            ],
         }
         return config
 
-    def get_super_ops(self) -> List[SuperConv2D]:
-        super_ops: List[SuperConv2D] = [
-            module
+    def get_super_ops(self) -> Dict[str, SuperConv2D]:
+        """Get all SuperConv2D layers in the model"""
+        super_ops: Dict[str, SuperConv2D] = {
+            name: module
             for name, module in self.named_modules()
             if isinstance(module, SuperConv2D)
-        ]
+        }
         return super_ops
 
-    def get_super_sequential_ops(self) -> List[SuperSequential]:
-        super_sequential_ops: List[SuperSequential] = [
-            module for module in self.modules() if isinstance(module, SuperSequential)
-        ]
+    def get_super_sequential_ops(self) -> Dict[str, SuperSequential]:
+        """Get all SuperSequential layers in the model"""
+        super_sequential_ops: Dict[str, SuperSequential] = {
+            name: module
+            for name, module in self.named_modules()
+            if isinstance(module, SuperSequential)
+        }
         return super_sequential_ops
 
     def list_first_level_sequential_layers(self):
