@@ -10,6 +10,8 @@ from torch.nn import functional as F
 
 from .utils.download import download_url_to_file
 
+DEVICE = "cuda"
+
 
 class CustomNNModule(nn.Module):
     """Wrapper for nn.Module with additional method to calculate params.
@@ -203,6 +205,17 @@ def create_sequential(
 
 
 def get_parameters(model: nn.Module) -> int:
+    """Recursively count the number of parameters in a model.
+
+    Args:
+        model: The model to count the parameters of. Can be a nn.Module or a string.
+
+    Returns:
+        The number of parameters in the model.
+    """
+    if isinstance(model, str):
+        log.info(f"Skipping parameters count for {model}")
+        return 0
     if isinstance(model, SuperSequential):
         return model.get_parameters()
 
@@ -327,11 +340,11 @@ class SuperConv2D(nn.Conv2d):
             self.subnet_in_dim,
             self.subnet_out_dim,
             self.subnet_kernel_size,
-        ).to("cuda")
+        ).to(DEVICE)
 
         if self.bias is not None:
             self.subnet["bias"] = self._subselect_bias(self.bias, self.subnet_out_dim)
-            self.subnet["bias"] = self.subnet["bias"].to("cuda")
+            self.subnet["bias"] = self.subnet["bias"].to(DEVICE)
 
     def forward(self, x):
         self._subnet_parameters()
@@ -457,6 +470,7 @@ class InceptionResnetV1(nn.Module):
         device=None,
     ):
         super().__init__()
+        device = DEVICE
 
         # Set simple attributes
         self.pretrained = pretrained
@@ -539,7 +553,7 @@ class InceptionResnetV1(nn.Module):
 
         self.device = torch.device("cpu")
         if device is not None:
-            self.device = device
+            self.device = DEVICE
             self.to(device)
 
         self.max_config = self.get_config()
