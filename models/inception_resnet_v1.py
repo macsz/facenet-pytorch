@@ -557,9 +557,11 @@ class InceptionResnetV1(nn.Module):
             self.to(device)
 
         self.max_config = self.get_config()
+        log.info(f"Initial config: {self.max_config}")
         self.set_config(self.max_config)
 
         log.info(f"Search space size: {self.get_search_space_size()}")
+        # exit()
 
         # self.set_config({"ks": [1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1]})
         # self.set_config(
@@ -581,20 +583,25 @@ class InceptionResnetV1(nn.Module):
         # log.info(f"Conv : {count_conv2d_parameters(self)}")
         # log.info(f"Model: {params(self)}")
 
-    def set_random_subnet(self):
-        config = self._get_random_config()
+    def set_random_subnet(self, random_kernel_size=True, random_num_layers=True):
+        config = self._get_random_config(random_kernel_size, random_num_layers)
         self.set_config(config)
 
-    def _get_random_config(self) -> Dict:
-        config = {
-            "ks": [
+    def _get_random_config(self, random_kernel_size=True, random_num_layers=True) -> Dict:
+        config = {}
+        if random_kernel_size:
+            config["ks"] = [
                 random.choice(list(range(1, ks + 1, 2))) for ks in self.max_config["ks"]
-            ],
-            "num_layers": [
+            ]
+        else:
+            config["ks"] = self.max_config["ks"]
+        if random_num_layers:
+            config["num_layers"] = [
                 random.choice(list(range(1, _ + 1)))
                 for _ in self.max_config["num_layers"]
-            ],
-        }
+            ]
+        else:
+            config["num_layers"] = self.max_config["num_layers"]
 
         return config
 
